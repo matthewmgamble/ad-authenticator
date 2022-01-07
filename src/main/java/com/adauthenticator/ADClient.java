@@ -58,10 +58,10 @@ public class ADClient implements ADAuthenticator {
 
     private static final Logger LOG = LoggerFactory.getLogger(ADClient.class);
     // A ThreadLocal instance to hold the logged in user details local to the thread.
-    private static final ThreadLocal<ADUser> LOGGED_IN_USER_HOLDER = new ThreadLocal<ADUser>();
+    private static final ThreadLocal<ADUser> LOGGED_IN_USER_HOLDER = new ThreadLocal<>();
     private String dnsDomain;
     private String searchFilter;
-    private List<String> searchObjects = new ArrayList<String>();
+    private List<String> searchObjects = new ArrayList<>();
     private Set<ADServerEntry> providerList;
 
     protected ADClient() {
@@ -73,6 +73,14 @@ public class ADClient implements ADAuthenticator {
         this.providerList   = fetchProviderList(adDomain);
     }
 
+    // New method to provide the AD servers statically if operating in an environment with broken DNS
+    
+    protected ADClient(String adDomain, Set<ADServerEntry> providerList ) {
+        this.dnsDomain = adDomain;
+        this.providerList = providerList;   
+    }
+    
+    
     public String getSearchFilter() {
         if (searchFilter == null || searchFilter.trim().equals("")) {
             return DEFAULT_SEARCH_FILTER;
@@ -129,7 +137,7 @@ public class ADClient implements ADAuthenticator {
     private void doAutoDiscovery() {
         try {
             String adDomain = "";
-            Set<ADServerEntry> providerList = null;
+            Set<ADServerEntry> localProviderList = null;
             String hostName = InetAddress.getLocalHost().getCanonicalHostName();
 
             LOG.debug("Hostname: {}", hostName);
@@ -139,8 +147,8 @@ public class ADClient implements ADAuthenticator {
             while ((index = hostName.indexOf(".", index + 2)) > -1) {
                 adDomain = hostName.substring(index + 1);
                 try {
-                    providerList = fetchProviderList(adDomain);
-                    if (providerList != null && providerList.size() > 0) {
+                    localProviderList = fetchProviderList(adDomain);
+                    if (localProviderList != null && localProviderList.size() > 0) {
                         break;
                     }
                 } catch (Exception e) {
@@ -148,13 +156,13 @@ public class ADClient implements ADAuthenticator {
                 }
             }
 
-            if (providerList == null || providerList.isEmpty()) {
+            if (localProviderList == null || localProviderList.isEmpty()) {
                 LOG.error("Auto-discovery couldn't find any srv records for {}", hostName);
                 throw new ADAuthenticatorException("Failed to retrieveUser srv records for " + hostName);
             }
 
             this.dnsDomain   = adDomain;
-            this.providerList = providerList;
+            this.providerList = localProviderList;
         } catch (UnknownHostException e) {
             LOG.error("Failed to detect domain. Error: " + e.getMessage());
             throw new ADAuthenticatorException("Failed to detect the domain ", e);
@@ -171,7 +179,7 @@ public class ADClient implements ADAuthenticator {
      */
     private Set<ADServerEntry> fetchProviderList(String dnsDomain) {
         LOG.debug("Searching provider list for domain '{}'", dnsDomain);
-        Set<ADServerEntry> providerList = new TreeSet<ADServerEntry>();
+        Set<ADServerEntry> localProviderList = new TreeSet<>();
         try {
             DirContext dirContext = new InitialDirContext();
             Attributes serverAttributes = dirContext.getAttributes("dns:/_ldap._tcp." + dnsDomain, new String[] { "srv" });
@@ -180,14 +188,14 @@ public class ADClient implements ADAuthenticator {
             for (NamingEnumeration<?> e = serverAttribute.getAll(); e.hasMoreElements();) {
                 String serverRecord = (String) e.nextElement();
                 LOG.debug("Processing srv record - {}", serverRecord);
-                providerList.add(ADServerEntryParser.parse(serverRecord));
+                localProviderList.add(ADServerEntryParser.parse(serverRecord));
             }
-            LOG.debug("Provider List: {}", providerList);
+            LOG.debug("Provider List: {}", localProviderList);
         } catch (NamingException e) {
             LOG.error("Failed to retrieveUser srv records for domain: '{}'. Error: {}", dnsDomain, e.getMessage());
             throw new ADAuthenticatorException("Failed to retrieveUser src records for domain: " + dnsDomain, e);
         }
-        return providerList;
+        return localProviderList;
     }
 
     private DirContext open(String userName, String password) {
@@ -244,10 +252,12 @@ public class ADClient implements ADAuthenticator {
 
     private String createSearchName() {
         StringBuilder sb = new StringBuilder();
-        for (String searchObject: searchObjects) {
+        searchObjects.stream().map(searchObject -> {
             sb.append(searchObject);
+            return searchObject;
+        }).forEachOrdered(_item -> {
             sb.append(",");
-        }
+        });
         sb.append(toDomainDN(dnsDomain));
         return sb.toString();
     }
@@ -260,7 +270,7 @@ public class ADClient implements ADAuthenticator {
         try {
             if (dirCtx != null)
                 dirCtx.close();
-        } catch (Exception e) {
+        } catch (NamingException e) {
             // ignore the exception
             LOG.warn("Error while closing the context", e);
         }
